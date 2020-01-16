@@ -7,4 +7,5 @@ _book/*
 .*.swp
 .*.swo
 *.un~
+.idea
 
