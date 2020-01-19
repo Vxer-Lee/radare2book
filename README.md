@@ -1,17 +1,15 @@
-# Introduction
+# 介绍
 
-This book is an updated version (started by maijin) of the original
-radare1 book (written by pancake). Which is actively maintained and
-updated by many contributors over the Internet.
+本书是原始的radee1书（由pancake编写）的更新版本（由maijin开始）。许多贡献者都通过Internet积极地维护和更新该文件。
 
-Check the Github site to add new contents or fix typos:
+检查Github网站以添加新内容或修正错别字：
 
 * Github: https://github.com/radare/radare2book
 * Gitbook: https://www.gitbook.com/book/radare/radare2book/details
 
-Gitbook autogenerates HTML/PDF/EPUB/MOBIL versions in here:
+Gitbook在以下位置自动生成HTML / PDF / EPUB / MOBIL版本：
 
-* Online: http://radare.gitbooks.io/radare2book/content/
+* 在线: http://radare.gitbooks.io/radare2book/content/
 * PDF: https://www.gitbook.com/download/pdf/book/radare/radare2book
 * Epub: https://www.gitbook.com/download/epub/book/radare/radare2book
 * Mobi: https://www.gitbook.com/download/mobi/book/radare/radare2book
