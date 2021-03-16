@@ -1,0 +1,374 @@
+# .vmloop
+
+```text
+[offset]> fcn.vmloop
+```
+
+![vmloop bb-0a45](../../.gitbook/assets/bb-0a45.png)
+
+Well, that seems disappointingly short, but no worries, we have plenty to reverse yet. The thing is that this function uses a jump table at 0x00400a74,
+
+![vmloop bb-0a74](../../.gitbook/assets/bb-0a74%20%281%29.png)
+
+and r2 can't yet recognize jump tables \([Issue 3201](https://github.com/radare/radare2/issues/3201)\), so the analysis of this function is a bit incomplete. This means that we can't really use the graph view now, so either we just use visual mode, or fix those basic blocks. The entire function is just 542 bytes long, so we certainly could reverse it without the aid of the graph mode, but since this writeup aims to include as much r2 wisdom as possible, I'm going to show you how to define basic blocks.
+
+But first, lets analyze what we already have! First, _rdi_ is put into local\_3. Since the application is a 64bit Linux executable, we know that _rdi_ is the first function argument \(as you may have recognized, the automatic analysis of arguments and local variables was not entirely correct\), and we also know that _vmloop_'s first argument is the bytecode. So lets rename local\_3:
+
+```text
+:> afvn local_3 bytecode
+```
+
+Next, _sym.memory_ is put into another local variable at _rbp-8_ that r2 did not recognize. So let's define it!
+
+```text
+:> afv 8 memory qword
+```
+
+> _**r2 tip**_: The _afv \[idx\] \[name\] \[type\]_ command is used to define local variable at \[frame pointer - idx\] with the name \[name\] and type \[type\]. You can also remove local variables using the _afv- \[idx\]_ command.
+
+In the next block, the program checks one byte of bytecode, and if it is 0, the function returns with 1.
+
+![vmloop bb-0c4d](../../.gitbook/assets/bb-0c4d.png)
+
+If that byte is not zero, the program subtracts 0x41 from it, and compares the result to 0x17. If it is above 0x17, we get the dreaded "Wrong!" message, and the function returns with 0. This basically means that valid bytecodes are ASCII characters in the range of "A" \(0x41\) through "X" \(0x41 + 0x17\). If the bytecode is valid, we arrive at the code piece that uses the jump table:
+
+![vmloop bb-0a74](../../.gitbook/assets/bb-0a74.png)
+
+The jump table's base is at 0x400ec0, so lets define that memory area as a series of qwords:
+
+```text
+[0x00400a74]> s 0x00400ec0
+[0x00400ec0]> Cd 8 @@=`?s $$ $$+8*0x17 8`
+```
+
+> _**r2 tip**_: Except for the _?s_, all parts of this command should be familiar now, but lets recap it! _Cd_ defines a memory area as data, and 8 is the size of that memory area. _@@_ is an iterator that make the preceding command run for every element that _@@_ holds. In this example it holds a series generated using the _?s_ command. _?s_ simply generates a series from the current seek \(_$$_\) to current seek + 8_0x17 \(_$$+8_0x17_\) with a step of 8.
+
+This is how the disassembly looks like after we add this metadata:
+
+```text
+[0x00400ec0]> pd 0x18
+            ; DATA XREF from 0x00400a76 (unk)
+            0x00400ec0 .qword 0x0000000000400a80
+            0x00400ec8 .qword 0x0000000000400c04
+            0x00400ed0 .qword 0x0000000000400b6d
+            0x00400ed8 .qword 0x0000000000400b17
+            0x00400ee0 .qword 0x0000000000400c04
+            0x00400ee8 .qword 0x0000000000400c04
+            0x00400ef0 .qword 0x0000000000400c04
+            0x00400ef8 .qword 0x0000000000400c04
+            0x00400f00 .qword 0x0000000000400aec
+            0x00400f08 .qword 0x0000000000400bc1
+            0x00400f10 .qword 0x0000000000400c04
+            0x00400f18 .qword 0x0000000000400c04
+            0x00400f20 .qword 0x0000000000400c04
+            0x00400f28 .qword 0x0000000000400c04
+            0x00400f30 .qword 0x0000000000400c04
+            0x00400f38 .qword 0x0000000000400b42
+            0x00400f40 .qword 0x0000000000400c04
+            0x00400f48 .qword 0x0000000000400be5
+            0x00400f50 .qword 0x0000000000400ab6
+            0x00400f58 .qword 0x0000000000400c04
+            0x00400f60 .qword 0x0000000000400c04
+            0x00400f68 .qword 0x0000000000400c04
+            0x00400f70 .qword 0x0000000000400c04
+            0x00400f78 .qword 0x0000000000400b99
+```
+
+As we can see, the address 0x400c04 is used a lot, and besides that there are 9 different addresses. Lets see that 0x400c04 first!
+
+![vmloop bb-0c04](../../.gitbook/assets/bb-0c04.png)
+
+We get the message "Wrong!", and the function just returns 0. This means that those are not valid instructions \(they are valid bytecode though, they can be e.g. parameters!\) We should flag 0x400c04 accordingly:
+
+```text
+[0x00400ec0]> f not_instr @ 0x0000000000400c04
+```
+
+As for the other offsets, they all seem to be doing something meaningful, so we can assume they belong to valid instructions. I'm going to flag them using the instructions' ASCII values:
+
+```text
+[0x00400ec0]> f instr_A @ 0x0000000000400a80
+[0x00400ec0]> f instr_C @ 0x0000000000400b6d
+[0x00400ec0]> f instr_D @ 0x0000000000400b17
+[0x00400ec0]> f instr_I @ 0x0000000000400aec
+[0x00400ec0]> f instr_J @ 0x0000000000400bc1
+[0x00400ec0]> f instr_P @ 0x0000000000400b42
+[0x00400ec0]> f instr_R @ 0x0000000000400be5
+[0x00400ec0]> f instr_S @ 0x0000000000400ab6
+[0x00400ec0]> f instr_X @ 0x0000000000400b99
+```
+
+Ok, so these offsets were not on the graph, so it is time to define basic blocks for them!
+
+> _**r2 tip**_: You can define basic blocks using the _afb+_ command. You have to supply what function the block belongs to, where does it start, and what is its size. If the block ends in a jump, you have to specify where does it jump too. If the jump is a conditional jump, the false branch's destination address should be specified too.
+
+We can get the start and end addresses of these basic blocks from the full disasm of _vmloop_.
+
+![vmloop full](../../.gitbook/assets/vmloop-full.png)
+
+As I've mentioned previously, the function itself is pretty short, and easy to read, especially with our annotations. But a promise is a promise, so here is how we can create the missing bacic blocks for the instructions:
+
+```text
+[0x00400ec0]> afb+ 0x00400a45 0x00400a80 0x00400ab6-0x00400a80 0x400c15
+[0x00400ec0]> afb+ 0x00400a45 0x00400ab6 0x00400aec-0x00400ab6 0x400c15
+[0x00400ec0]> afb+ 0x00400a45 0x00400aec 0x00400b17-0x00400aec 0x400c15
+[0x00400ec0]> afb+ 0x00400a45 0x00400b17 0x00400b42-0x00400b17 0x400c15
+[0x00400ec0]> afb+ 0x00400a45 0x00400b42 0x00400b6d-0x00400b42 0x400c15
+[0x00400ec0]> afb+ 0x00400a45 0x00400b6d 0x00400b99-0x00400b6d 0x400c15
+[0x00400ec0]> afb+ 0x00400a45 0x00400b99 0x00400bc1-0x00400b99 0x400c15
+[0x00400ec0]> afb+ 0x00400a45 0x00400bc1 0x00400be5-0x00400bc1 0x400c15
+[0x00400ec0]> afb+ 0x00400a45 0x00400be5 0x00400c04-0x00400be5 0x400c15
+```
+
+It is also apparent from the disassembly that besides the instructions there are three more basic blocks. Lets create them too!
+
+```text
+[0x00400ec0]> afb+ 0x00400a45 0x00400c15 0x00400c2d-0x00400c15 0x400c3c 0x00400c2d
+[0x00400ec0]> afb+ 0x00400a45 0x00400c2d 0x00400c3c-0x00400c2d 0x400c4d 0x00400c3c
+[0x00400ec0]> afb+ 0x00400a45 0x00400c3c 0x00400c4d-0x00400c3c 0x400c61
+```
+
+Note that the basic blocks starting at 0x00400c15 and 0x00400c2d ending in a conditional jump, so we had to set the false branch's destination too!
+
+And here is the graph in its full glory after a bit of manual restructuring:
+
+![vmloop graph](../../.gitbook/assets/vmloop-graph-reconstructed_full.png)
+
+I think it worth it, don't you? :\) \(Well, the restructuring did not really worth it, because it is apparently not stored when you save the project.\)
+
+> _**r2 tip**_: You can move the selected node around in graph view using the HJKL keys.
+
+BTW, here is how IDA's graph of this same function looks like for comparison:
+
+![IDA graph](../../.gitbook/assets/vmloop_ida.png)
+
+As we browse through the disassembly of the _instr\_LETTER_ basic blocks, we should realize a few things. The first: all of the instructions starts with a sequence like these:
+
+![vmloop bb-0a80](../../.gitbook/assets/bb-0a80.png)
+
+![vmloop bb-0ab6](../../.gitbook/assets/bb-0ab6.png)
+
+It became clear now that the 9 dwords at _sym.instr\_dirty_ are not simply indicators that an instruction got executed, but they are used to count how many times an instruction got called. Also I should have realized earlier that _sym.good\_if\_le\_9_ \(0x6020f0\) is part of this 9 dword array, but yeah, well, I didn't, I have to live with it... Anyways, what the condition "_sym.good\_if\_le\_9_ have to be lesser or equal 9" really means is that _instr\_P_ can not be executed more than 9 times:
+
+![vmloop bb-0b42](../../.gitbook/assets/bb-0b42.png)
+
+Another similarity of the instructions is that 7 of them calls a function with either one or two parameters, where the parameters are the next, or the next two bytecodes. One parameter example:
+
+![vmloop bb-0aec](../../.gitbook/assets/bb-0aec.png)
+
+And a two parameters example:
+
+![vmloop bb-0a80\_full](../../.gitbook/assets/bb-0a80_full.png)
+
+We should also realize that these blocks put the number of bytes they eat up of the bytecode \(1 byte instruction + 1 or 2 bytes arguments = 2 or 3\) into a local variable at 0xc. r2 did not recognize this local var, so lets do it manually!
+
+```text
+:> afv 0xc instr_ptr_step dword
+```
+
+If we look at _instr\_J_ we can see that this is an exception to the above rule, since it puts the return value of the called function into _instr\_ptr\_step_ instead of a constant 2 or 3:
+
+![vmloop bb-0bc1](../../.gitbook/assets/bb-0bc1.png)
+
+And speaking of exceptions, here are the two instructions that do not call functions:
+
+![vmloop bb-0be5](../../.gitbook/assets/bb-0be5.png)
+
+This one simply puts the next bytecode \(the first the argument\) into _eax_, and jumps to the end of _vmloop_. So this is the VM's _ret_ instruction, and we know that _vmloop_ has to return "\*", so "R\*" should be the last two bytes of our bytecode.
+
+The next one that does not call a function:
+
+![vmloop bb-0b6d](../../.gitbook/assets/bb-0b6d.png)
+
+This is a one argument instruction, and it puts its argument to 0x6020c0. Flag that address!
+
+```text
+:> f sym.written_by_instr_C 4 @ 0x6020c0
+```
+
+Oh, and by the way, I do have a hunch that _instr\_C_ also had a function call in the original code, but it got inlined by the compiler. Anyways, so far we have these two instructions:
+
+* _instr\_R\(a1\):_ returns with _a1_
+* _instr\_C\(a1\):_ writes _a1_ to _sym.written\_by\_instr\_C_
+
+And we also know that these accept one argument,
+
+* instr\_I
+* instr\_D
+* instr\_P
+* instr\_X
+* instr\_J
+
+and these accept two:
+
+* instr\_A
+* instr\_S
+
+What remains is the reversing of the seven functions that are called by the instructions, and finally the construction of a valid bytecode that gives us the flag.
+
+## instr\_A
+
+The function this instruction calls is at offset 0x40080d, so lets seek there!
+
+```text
+[offset]> 0x40080d
+```
+
+> _**r2 tip:**_ In visual mode you can just hit \ when the current line is a jump or a call, and r2 will seek to the destination address.
+
+If we seek to that address from the graph mode, we are presented with a message that says "Not in a function. Type 'df' to define it here. This is because the function is called from a basic block r2 did not recognize, so r2 could not find the function either. Lets obey, and type _df_! A function is indeed created, but we want some meaningful name for it. So press _dr_ while still in visual mode, and name this function _instr\_A_!
+
+![instr\_A minimap](../../.gitbook/assets/instr_A_minimap.png)
+
+> _**r2 tip:**_ You should realize that these commands are all part of the same menu system in visual mode I was talking about when we first used _Cd_ to declare _sym.memory_ as data.
+
+Ok, now we have our shiny new _fcn.instr\_A_, lets reverse it! We can see from the shape of the minimap that probably there is some kind cascading if-then-elif, or a switch-case statement involved in this function. This is one of the reasons the minimap is so useful: you can recognize some patterns at a glance, which can help you in your analysis \(remember the easily recognizable for loop from a few paragraphs before?\) So, the minimap is cool and useful, but I've just realized that I did not yet show you the full graph mode, so I'm going to do this using full graph. The first basic blocks:
+
+![instr\_A bb-080d](../../.gitbook/assets/bb-080d.png)
+
+The two function arguments \(_rdi_ and _rsi_\) are stored in local variables, and the first is compared to 0. If it is, the function returns \(you can see it on the minimap\), otherwise the same check is executed on the second argument. The function returns from here too, if the argument is zero. Although this function is really tiny, I am going to stick with my methodology, and rename the local vars:
+
+```text
+:> afvn local_1 arg1
+:> afvn local_2 arg2
+```
+
+And we have arrived to the predicted switch-case statement, and we can see that _arg1_'s value is checked against "M", "P", and "C".
+
+![instr\_A switch values](../../.gitbook/assets/switch-values.png)
+
+This is the "M" branch:
+
+![instr\_A switch-M](../../.gitbook/assets/switch-M.png)
+
+It basically loads an address from offset 0x602088 and adds _arg2_ to the byte at that address. As r2 kindly shows us in a comment, 0x602088 initially holds the address of _sym.memory_, the area where we have to construct the "Such VM! MuCH reV3rse!" string. It is safe to assume that somehow we will be able to modify the value stored at 0x602088, so this "M" branch will be able to modify bytes other than the first. Based on this assumption, I'll flag 0x602088 as _sym.current\_memory\_ptr_:
+
+```text
+:> f sym.current_memory_ptr 8 @ 0x602088
+```
+
+Moving on to the "P" branch:
+
+![instr\_A switch-P](../../.gitbook/assets/switch-P.png)
+
+Yes, this is the piece of code that allows us to modify _sym.current\_memory\_ptr_: it adds _arg2_ to it.
+
+Finally, the "C" branch:
+
+![instr\_A switch-C](../../.gitbook/assets/switch-C.png)
+
+Well, it turned out that _instr\_C_ is not the only instruction that modifies _sym.written\_by\_instr\_C_: this piece of code adds _arg2_ to it.
+
+And that was _instr\_A_, lets summarize it! Depending on the first argument, this instruction does the following:
+
+* _arg1_ == "M": adds _arg2_ to the byte at _sym.current\_memory\_ptr_.
+* _arg1_ == "P": steps _sym.current\_memory\_ptr_ by _arg2_ bytes.
+* _arg1_ == "C": adds _arg2_ to the value at _sym.written\_by\_instr\_C_.
+
+## instr\_S
+
+This function is not recognized either, so we have to manually define it like we did with _instr\_A_. After we do, and take a look at the minimap, scroll through the basic blocks, it is pretty obvious that these two functions are very-very similar. We can use _radiff2_ to see the difference.
+
+> _**r2 tip:**_ radiff2 is used to compare binary files. There's a few options we can control the type of binary diffing the tool does, and to what kind of output format we want. One of the cool features is that it can generate [DarumGrim](http://www.darungrim.org/)-style bindiff graphs using the _-g_ option.
+
+Since now we want to diff two functions from the same binary, we specify the offsets with _-g_, and use reverse4 for both binaries. Also, we create the graphs for comparing _instr\_A_ to _instr\_S_ and for comparing _instr\_S_ to _instr\_A_.
+
+```text
+[0x00 ~]$ radiff2 -g 0x40080d,0x40089f  reverse4 reverse4 | xdot -
+```
+
+![instr\_S graph1](../../.gitbook/assets/graph1.png)
+
+```text
+[0x00 ~]$ radiff2 -g 0x40089f,0x40080d  reverse4 reverse4 | xdot -
+```
+
+![instr\_S graph2](../../.gitbook/assets/graph2.png)
+
+A sad truth reveals itself after a quick glance at these graphs: radiff2 is a liar! In theory, grey boxes should be identical, yellow ones should differ only at some offsets, and red ones should differ seriously. Well this is obviously not the case here - e.g. the larger grey boxes are clearly not identical. This is something I'm definitely going to take a deeper look at after I've finished this writeup.
+
+Anyways, after we get over the shock of being lied to, we can easily recognize that _instr\_S_ is basically a reverse-_instr\_A_: where the latter does addition, the former does subtraction. To summarize this:
+
+* _arg1_ == "M": subtracts _arg2_ from the byte at _sym.current\_memory\_ptr_.
+* _arg1_ == "P": steps _sym.current\_memory\_ptr_ backwards by _arg2_ bytes.
+* _arg1_ == "C": subtracts _arg2_ from the value at _sym.written\_by\_instr\_C_.
+
+## instr\_I
+
+![instr\_I](../../.gitbook/assets/instr_I.png)
+
+This one is simple, it just calls _instr\_A\(arg1, 1\)_. As you may have noticed the function call looks like `call fcn.0040080d` instead of `call fcn.instr_A`. This is because when you save and open a project, function names get lost - another thing to examine and patch in r2!
+
+## instr\_D
+
+![instr\_D](../../.gitbook/assets/instr_D.png)
+
+Again, simple: it calls _instr\_S\(arg1, 1\)_.
+
+## instr\_P
+
+It's local var rename time again!
+
+```text
+:> afvn local_0_1 const_M
+:> afvn local_0_2 const_P
+:> afvn local_3 arg1
+```
+
+![instr\_P](../../.gitbook/assets/instr_P.png)
+
+This function is pretty straightforward also, but there is one oddity: const\_M is never used. I don't know why it is there - maybe it is supposed to be some kind of distraction? Anyways, this function simply writes _arg1_ to _sym.current\_memory\_ptr_, and than calls _instr\_I\("P"\)_. This basically means that _instr\_P_ is used to write one byte, and put the pointer to the next byte. So far this would seem the ideal instruction to construct most of the "Such VM! MuCH reV3rse!" string, but remember, this is also the one that can be used only 9 times!
+
+## instr\_X
+
+Another simple one, rename local vars anyways!
+
+```text
+:> afvn local_1 arg1
+```
+
+![instr\_X](../../.gitbook/assets/instr_X.png)
+
+This function XORs the value at _sym.current\_memory\_ptr_ with _arg1_.
+
+## instr\_J
+
+This one is not as simple as the previous ones, but it's not that complicated either. Since I'm obviously obsessed with variable renaming:
+
+```text
+:> afvn local_3 arg1
+:> afvn local_0_4 arg1_and_0x3f
+```
+
+![instr\_J](../../.gitbook/assets/instr_J.png)
+
+After the result of _arg1 & 0x3f_ is put into a local variable, _arg1 & 0x40_ is checked against 0. If it isn't zero, _arg1\_and\_0x3f_ is negated:
+
+![instr\_J bb-09e1](../../.gitbook/assets/bb-09e1.png)
+
+The next branching: if _arg1_ &gt;= 0, then the function returns _arg1\_and\_0x3f_,
+
+![instr\_J bb-09e4](../../.gitbook/assets/bb-09e4.png)
+
+![instr\_J bb-0a1a](../../.gitbook/assets/bb-0a1a.png)
+
+else the function branches again, based on the value of _sym.written\_by\_instr\_C_:
+
+![instr\_J bb-09ef](../../.gitbook/assets/bb-09ef.png)
+
+If it is zero, the function returns 2,
+
+![instr\_J bb-0a13](../../.gitbook/assets/bb-0a13.png)
+
+else it is checked if _arg1\_and\_0x3f_ is a negative number,
+
+![instr\_J bb-09f9](../../.gitbook/assets/bb-09f9.png)
+
+and if it is, _sym.good\_if\_ne\_zero_ is incremented by 1:
+
+![instr\_J bb-09ff](../../.gitbook/assets/bb-09ff.png)
+
+After all this, the function returns with _arg1\_and\_0x3f_:
+
+![instr\_J bb-0a0e](../../.gitbook/assets/bb-0a0e.png)
+
